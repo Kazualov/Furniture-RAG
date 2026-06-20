@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException
 from typing import List, Dict, Any
 from src.search.interfaces import SearchQueryRequest, DBResultItem
 from src.search.database_mock import MockDBClient
+import uvicorn
 
 app = FastAPI(title="Hybrid Search Engine API", version="0.1.0")
 
@@ -82,3 +83,12 @@ async def hybrid_search(payload: SearchQueryRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Search Error: {str(e)}")
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )
