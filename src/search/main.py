@@ -1,8 +1,8 @@
 import asyncio
 from fastapi import FastAPI, HTTPException
 from typing import List, Dict, Any
-from .interfaces import SearchQueryRequest, DBResultItem
-from .database_mock import MockDBClient
+from src.search.interfaces import SearchQueryRequest, DBResultItem
+from src.search.database_mock import MockDBClient
 
 app = FastAPI(title="Hybrid Search Engine API", version="0.1.0")
 
