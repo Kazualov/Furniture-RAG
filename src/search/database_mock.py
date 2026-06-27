@@ -8,7 +8,7 @@ from src.search.interfaces import DBResultItem, ProductMetadata
 DATA_DIR = Path(__file__).resolve().parent.parent / "models" / "embeddings"
 print(DATA_DIR)
 EMBEDDINGS_PATH = DATA_DIR / "office_products_micro_embeddings_fp32.npy"
-METADATA_PATH = DATA_DIR / "office_products_micro_metadata.parquet"
+METADATA_PATH = DATA_DIR / "office_products_micro.parquet"
 
 # Global indicators to serve as our in-memory data tables
 _embeddings: np.ndarray = None

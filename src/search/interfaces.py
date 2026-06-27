@@ -1,17 +1,21 @@
 import math
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
+from typing import Optional
 
 
 class ProductMetadata(BaseModel):
     parent_asin: str = Field(..., description="Parent ASIN for variant grouping")
     title: str = Field(..., description="Product title")
+    description: Optional[str] = Field(None, description="Detailed product description")
+    features: Optional[str] = Field(None, description="Product features/bullet points")
+    categories: Optional[str] = Field(None, description="Delimited subcategory string")
+    details_text: Optional[str] = Field(None, description="Converted details dictionary to text")
     price: Optional[float] = Field(None, description="Product price in USD")
     average_rating: Optional[float] = Field(None, description="Aggregated rating score (1-5)")
     rating_number: Optional[int] = Field(0, description="Total number of ratings received")
     store: Optional[str] = Field(None, description="Store brand information")
     image_url: Optional[str] = Field(None, description="Extracted display image URL")
-    categories: Optional[str] = Field(None, description="Delimited subcategory string")
+    full_text: Optional[str] = Field(None, description="Concatenated rich text used for embeddings")
 
     @field_validator('price', 'average_rating', 'rating_number', mode='before')
     @classmethod
