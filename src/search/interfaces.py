@@ -1,20 +1,42 @@
-from pydantic import BaseModel, Field
-from typing import Optional
+import math
+from pydantic import BaseModel, Field, field_validator
+from typing import List, Optional
+
 
 class ProductMetadata(BaseModel):
-    asin: str = Field(..., description="Unique Amazon Standard Identification Number")
     parent_asin: str = Field(..., description="Parent ASIN for variant grouping")
     title: str = Field(..., description="Product title")
-    description: Optional[str] = Field(None, description="Detailed product description")
     price: Optional[float] = Field(None, description="Product price in USD")
-    main_category: Optional[str] = Field(None, description="Primary product category")
     average_rating: Optional[float] = Field(None, description="Aggregated rating score (1-5)")
-    rating_number: int = Field(0, description="Total number of ratings received")
+    rating_number: Optional[int] = Field(0, description="Total number of ratings received")
+    store: Optional[str] = Field(None, description="Store brand information")
+    image_url: Optional[str] = Field(None, description="Extracted display image URL")
+    categories: Optional[str] = Field(None, description="Delimited subcategory string")
+
+    @field_validator('price', 'average_rating', 'rating_number', mode='before')
+    @classmethod
+    def clean_missing_numeric_data(cls, v):
+        """
+        Intercepts raw data inputs before validation to safely convert
+        stringified 'None', 'NaN', or empty fields into true Python None.
+        """
+        if isinstance(v, str):
+            cleaned = v.strip().lower()
+            if cleaned in ('none', 'null', 'nan', ''):
+                return None
+
+        # Handle native floating-point NaNs that leak from Pandas dataframes
+        if isinstance(v, float) and math.isnan(v):
+            return None
+
+        return v
+
 
 class DBResultItem(BaseModel):
-    product_id: str = Field(..., description="Maps to parent_asin or asin")
+    product_id: str = Field(..., description="Maps to parent_asin")
     score: float = Field(..., description="Raw match score from the underlying database")
     metadata: ProductMetadata
+
 
 class SearchQueryRequest(BaseModel):
     query: str
