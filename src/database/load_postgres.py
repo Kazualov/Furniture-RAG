@@ -74,22 +74,34 @@ INSERT_QUERY = """
 """
 
 
-def _clean_missing(value):
-    """
-    Аналог field_validator из ProductMetadata: превращает строковые
-    'none'/'null'/'nan'/'' и float NaN в настоящий Python None,
-    чтобы в БД не улетали мусорные строки вместо NULL.
-    """
-    if isinstance(value, str):
-        cleaned = value.strip().lower()
-        if cleaned in ("none", "null", "nan", ""):
-            return None
-        return value
-
+def _is_missing(value) -> bool:
+    if value is None:
+        return True
     if isinstance(value, float) and math.isnan(value):
-        return None
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
 
-    return value
+
+def _clean_text(value) -> str | None:
+    """Normalize text columns to str | None for asyncpg TEXT fields."""
+    if _is_missing(value):
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned or cleaned.lower() in ("none", "null", "nan"):
+            return None
+        return cleaned
+    return str(value)
+
+
+def _clean_float(value) -> float | None:
+    """Normalize nullable numeric columns for asyncpg DOUBLE PRECISION fields."""
+    if _is_missing(value):
+        return None
+    return float(value)
 
 
 def load_dataframe(path: str) -> pd.DataFrame:
@@ -105,18 +117,22 @@ def load_dataframe(path: str) -> pd.DataFrame:
 
     df = df[REQUIRED_COLUMNS].copy()
 
-    # Очистка "пустых" значений по тем же правилам, что и ProductMetadata
+    # Очистка "пустых" значений по тем же правилам, что и ProductMetadata.
+    # Явно приводим текстовые колонки к object + None: itertuples иначе
+    # может отдать float NaN вместо NULL для asyncpg.
     text_cols = [
-        "title", "description", "features", "categories",
+        "parent_asin", "title", "description", "features", "categories",
         "details_text", "store", "image_url", "full_text",
     ]
     for col in text_cols:
-        df[col] = df[col].apply(_clean_missing)
+        df[col] = df[col].map(_clean_text).astype(object)
 
-    df["price"] = pd.to_numeric(df["price"].apply(_clean_missing), errors="coerce")
-    df["average_rating"] = pd.to_numeric(df["average_rating"].apply(_clean_missing), errors="coerce")
+    df["price"] = pd.to_numeric(df["price"].map(_clean_text), errors="coerce").map(_clean_float)
+    df["average_rating"] = pd.to_numeric(
+        df["average_rating"].map(_clean_text), errors="coerce"
+    ).map(_clean_float)
     df["rating_number"] = (
-        pd.to_numeric(df["rating_number"].apply(_clean_missing), errors="coerce")
+        pd.to_numeric(df["rating_number"].map(_clean_text), errors="coerce")
         .fillna(0)
         .astype(int)
     )
@@ -127,8 +143,31 @@ def load_dataframe(path: str) -> pd.DataFrame:
     return df
 
 
+def _sanitize_row(row: tuple) -> tuple:
+    """Last-line guard: asyncpg TEXT params must be str | None, never float NaN."""
+    (
+        parent_asin, title, description, features, categories,
+        details_text, price, average_rating, rating_number,
+        store, image_url, full_text,
+    ) = row
+    return (
+        _clean_text(parent_asin),
+        _clean_text(title),
+        _clean_text(description),
+        _clean_text(features),
+        _clean_text(categories),
+        _clean_text(details_text),
+        _clean_float(price),
+        _clean_float(average_rating),
+        int(rating_number) if not _is_missing(rating_number) else 0,
+        _clean_text(store),
+        _clean_text(image_url),
+        _clean_text(full_text),
+    )
+
+
 async def insert_rows(conn: asyncpg.Connection, rows: list[tuple]) -> None:
-    await conn.executemany(INSERT_QUERY, rows)
+    await conn.executemany(INSERT_QUERY, [_sanitize_row(r) for r in rows])
 
 
 async def main() -> None:
