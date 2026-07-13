@@ -1,12 +1,26 @@
 import asyncio
+from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from typing import List, Dict, Any
 from sentence_transformers import SentenceTransformer
-from src.search.interfaces import SearchQueryRequest, DBResultItem
-from src.search.database_mock import RealDataLocalSimulator
 
-app = FastAPI(title="Hybrid Search Engine API", version="0.1.0")
+from src.models.interfaces import SearchQueryRequest, DBResultItem
+# Import the new live client instead of the local simulator
+from src.database.database import LiveDatabaseClient
+
+print("Loading text encoder model (all-MiniLM-L6-v2)...")
+encoder_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Open DB pools
+    await LiveDatabaseClient.connect()
+    yield
+    # Shutdown: Close DB pools safely
+    await LiveDatabaseClient.disconnect()
+
+app = FastAPI(title="Hybrid Search Engine API", version="0.1.0", lifespan=lifespan)
 
 # Initialize the real encoder model globally so it only loads once into memory on startup
 print("Loading text encoder model (all-MiniLM-L6-v2)...")
@@ -65,17 +79,14 @@ def weighted_reciprocal_rank_fusion(
 async def hybrid_search(payload: SearchQueryRequest):
     try:
         query_text = payload.query
-
-        # 1. Generate real query embeddings using SentenceTransformers
-        # Convert to numpy array and ensure it is flat
         query_vector = encoder_model.encode(query_text, normalize_embeddings=True).tolist()
 
-        # 2. Query our high-fidelity local simulator
-        sparse_task = RealDataLocalSimulator.search_sparse(query_text, limit=payload.limit)
-        dense_task = RealDataLocalSimulator.search_dense(query_vector, limit=payload.limit)
+        # Swap out the simulator calls for the Live Database Client
+        sparse_task = LiveDatabaseClient.search_sparse(query_text, limit=payload.limit)
+        dense_task = LiveDatabaseClient.search_dense(query_vector, limit=payload.limit)
+
         sparse_results, dense_results = await asyncio.gather(sparse_task, dense_task)
 
-        # 3. Fuse real product listings using your RRF logic
         final_results = weighted_reciprocal_rank_fusion(
             sparse_results=sparse_results,
             dense_results=dense_results,
@@ -88,4 +99,4 @@ async def hybrid_search(payload: SearchQueryRequest):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("src.search.main:app", host="0.0.0.0", port=8000, reload=True)
