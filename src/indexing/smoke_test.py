@@ -19,13 +19,10 @@ from src.indexing import config
 # Постгрес: лексический индекс
 # --------------------------------------------------------------------------- #
 SMOKE_ROWS = [
-    # (asin, parent_asin, title, description)
-    ("SMOKE_1", "SMOKE_1", "Black Leather Office Chair",
-     "Ergonomic executive chair with lumbar support."),
-    ("SMOKE_2", "SMOKE_2", "Wooden Dining Table",
-     "Solid oak table for six people."),
-    ("SMOKE_3", "SMOKE_3", "Office Desk Lamp",
-     "LED desk lamp with adjustable brightness."),
+    # (parent_asin, title, description)
+    ("SMOKE_1", "Black Leather Office Chair", "Ergonomic executive chair with lumbar support."),
+    ("SMOKE_2", "Wooden Dining Table", "Solid oak table for six people."),
+    ("SMOKE_3", "Office Desk Lamp", "LED desk lamp with adjustable brightness."),
 ]
 
 
@@ -41,12 +38,12 @@ async def test_postgres() -> bool:
             await conn.execute(sql)
         print("[Postgres] миграция применена (search_vector + GIN)")
 
-        # 2) вставляем тестовые строки
+        # 2) вставляем тестовые строки (using parent_asin)
         await conn.executemany(
             """
-            INSERT INTO products (asin, parent_asin, title, description, rating_number)
-            VALUES ($1, $2, $3, $4, 0)
-            ON CONFLICT (asin) DO UPDATE SET
+            INSERT INTO products (parent_asin, title, description, rating_number)
+            VALUES ($1, $2, $3, 0)
+            ON CONFLICT (parent_asin) DO UPDATE SET
                 title = EXCLUDED.title, description = EXCLUDED.description
             """,
             SMOKE_ROWS,
@@ -55,14 +52,14 @@ async def test_postgres() -> bool:
         # 3) лексический поиск — ожидаем, что "office chair" поднимет SMOKE_1 наверх
         rows = await conn.fetch(
             """
-            SELECT asin, ts_rank_cd(search_vector, query) AS score
+            SELECT parent_asin, ts_rank_cd(search_vector, query) AS score
             FROM products, websearch_to_tsquery($1, $2) AS query
-            WHERE search_vector @@ query AND asin LIKE 'SMOKE_%'
+            WHERE search_vector @@ query AND parent_asin LIKE 'SMOKE_%'
             ORDER BY score DESC
             """,
             config.FTS_LANGUAGE, "office chair",
         )
-        found = [r["asin"] for r in rows]
+        found = [r["parent_asin"] for r in rows]
         print(f"[Postgres] поиск 'office chair' -> {found}")
 
         ok = bool(found) and found[0] == "SMOKE_1"
@@ -73,7 +70,7 @@ async def test_postgres() -> bool:
         return ok
     finally:
         # cleanup
-        await conn.execute("DELETE FROM products WHERE asin LIKE 'SMOKE_%'")
+        await conn.execute("DELETE FROM products WHERE parent_asin LIKE 'SMOKE_%'")
         await conn.close()
 
 

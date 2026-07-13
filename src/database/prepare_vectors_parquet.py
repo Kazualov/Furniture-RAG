@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 
-emb = np.load("src/models/embeddings/office_products_micro_embeddings_fp32.npy")
-meta = pd.read_parquet("src/models/embeddings/office_products_micro.parquet")
+emb = np.load("embeddings/office_products_full_embeddings_fp32.npy")
+meta = pd.read_parquet("embeddings/office_products_full.parquet")
 
 df = pd.DataFrame({
     "parent_asin": meta["parent_asin"].values,
