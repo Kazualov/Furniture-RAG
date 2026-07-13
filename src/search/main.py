@@ -9,6 +9,7 @@ from src.models.interfaces import SearchQueryRequest, DBResultItem
 # Import the new live client instead of the local simulator
 from src.database.database import LiveDatabaseClient
 
+# Initialize the real encoder model globally so it only loads once into memory on startup
 print("Loading text encoder model (all-MiniLM-L6-v2)...")
 encoder_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
@@ -22,9 +23,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Hybrid Search Engine API", version="0.1.0", lifespan=lifespan)
 
-# Initialize the real encoder model globally so it only loads once into memory on startup
-print("Loading text encoder model (all-MiniLM-L6-v2)...")
-encoder_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 def weighted_reciprocal_rank_fusion(
         sparse_results: List[DBResultItem],
