@@ -5,9 +5,9 @@ from fastapi import FastAPI, HTTPException
 from typing import List, Dict, Any
 from sentence_transformers import SentenceTransformer
 
-from src.search.interfaces import SearchQueryRequest, DBResultItem
+from src.models.interfaces import SearchQueryRequest, DBResultItem
 # Import the new live client instead of the local simulator
-from src.search.database import LiveDatabaseClient
+from src.database.database import LiveDatabaseClient
 
 print("Loading text encoder model (all-MiniLM-L6-v2)...")
 encoder_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")

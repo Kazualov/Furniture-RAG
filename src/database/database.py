@@ -1,22 +1,12 @@
 import os
 import asyncpg
 from qdrant_client import AsyncQdrantClient
-from dotenv import load_dotenv
-from src.search.interfaces import DBResultItem, ProductMetadata
 
-load_dotenv()
+# 1. Update imports for the new folder structure
+from src.models.interfaces import DBResultItem, ProductMetadata
 
-POSTGRES_DSN = (
-    f"postgresql://{os.getenv('POSTGRES_USER', 'rag_user')}:"
-    f"{os.getenv('POSTGRES_PASSWORD', 'rag_password')}@"
-    f"{os.getenv('POSTGRES_HOST', 'localhost')}:"
-    f"{os.getenv('POSTGRES_PORT', 5432)}/"
-    f"{os.getenv('POSTGRES_DB', 'furniture_db')}"
-)
-
-QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
-QDRANT_HTTP_PORT = int(os.getenv("QDRANT_HTTP_PORT", 6333))
-COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "furniture_products")
+# 2. Import teammate's config to stay synced with indexing
+from src.indexing import config
 
 
 class LiveDatabaseClient:
@@ -27,9 +17,15 @@ class LiveDatabaseClient:
     async def connect(cls):
         """Initialize connection pools. Call this on app startup."""
         if cls._pg_pool is None:
-            cls._pg_pool = await asyncpg.create_pool(POSTGRES_DSN)
+            # Connect using the centralized Postgres DSN
+            cls._pg_pool = await asyncpg.create_pool(config.POSTGRES_DSN)
+
         if cls._qdrant is None:
-            cls._qdrant = AsyncQdrantClient(host=QDRANT_HOST, port=QDRANT_HTTP_PORT)
+            # Connect using config variables (with fallbacks just in case)
+            host = getattr(config, "QDRANT_HOST", os.getenv("QDRANT_HOST", "localhost"))
+            port = getattr(config, "QDRANT_HTTP_PORT", int(os.getenv("QDRANT_HTTP_PORT", 6333)))
+            cls._qdrant = AsyncQdrantClient(host=host, port=port)
+
         print("Live DB connections established.")
 
     @classmethod
@@ -42,35 +38,34 @@ class LiveDatabaseClient:
 
     @classmethod
     async def search_sparse(cls, query: str, limit: int = 10) -> list[DBResultItem]:
-        """PostgreSQL Full-Text Search."""
+        """PostgreSQL Full-Text Search using the precomputed search_vector."""
         if not cls._pg_pool:
             await cls.connect()
 
-        # Basic Postgres full-text search. Concat title and store for a wider net.
+        # 3. Swap on-the-fly to_tsvector with the teammate's indexed search_vector
         sql = """
               SELECT *, \
-                     ts_rank_cd( \
-                             to_tsvector('english', concat_ws(' ', title, store)), \
-                             websearch_to_tsquery('english', $1) \
-                     ) AS score
-              FROM products
-              WHERE to_tsvector('english', concat_ws(' ', title, store)) @@ websearch_to_tsquery('english' \
-                  , $1)
+                     ts_rank_cd(search_vector, ts_query) AS score
+              FROM products, \
+                   websearch_to_tsquery($1, $2) AS ts_query
+              WHERE search_vector @@ ts_query
               ORDER BY score DESC
-                  LIMIT $2; \
+                  LIMIT $3; \
               """
 
         async with cls._pg_pool.acquire() as conn:
-            rows = await conn.fetch(sql, query, limit)
+            # Pass the configured language from src.indexing.config
+            rows = await conn.fetch(sql, config.FTS_LANGUAGE, query, limit)
 
         results = []
         for row in rows:
             row_dict = dict(row)
             score = row_dict.pop("score", 0.0)
 
-            # Double-check that your TRELLIS-500K metadata keys align here.
-            # If you standardized on file_identifier instead of parent_asin later,
-            # you'll need to map it accordingly.
+            # Pop the migration columns so they don't break Pydantic validation
+            row_dict.pop("search_vector", None)
+            row_dict.pop("ts_query", None)
+
             results.append(DBResultItem(
                 product_id=str(row_dict["parent_asin"]),
                 score=float(score),
@@ -85,9 +80,9 @@ class LiveDatabaseClient:
         if not cls._qdrant or not cls._pg_pool:
             await cls.connect()
 
-        # 1. Fetch nearest neighbors from Qdrant
+        # 4. Target the centralized Qdrant collection name
         qdrant_response = await cls._qdrant.query_points(
-            collection_name=COLLECTION_NAME,
+            collection_name=config.QDRANT_COLLECTION,
             query=query_vector,
             limit=limit,
             with_payload=True
@@ -97,14 +92,12 @@ class LiveDatabaseClient:
         if not qdrant_results:
             return []
 
-        # 2. Extract IDs and map their cosine similarity scores
         product_scores = {
             str(hit.payload.get("product_id", hit.id)): hit.score
             for hit in qdrant_results
         }
         product_ids = list(product_scores.keys())
 
-        # 3. Hydrate metadata from Postgres using the retrieved IDs
         sql = "SELECT * FROM products WHERE parent_asin = ANY($1::text[])"
         async with cls._pg_pool.acquire() as conn:
             rows = await conn.fetch(sql, product_ids)
@@ -113,13 +106,15 @@ class LiveDatabaseClient:
         for row in rows:
             row_dict = dict(row)
             pid = str(row_dict["parent_asin"])
+
+            # Pop migration columns here as well just to be safe
+            row_dict.pop("search_vector", None)
+
             results.append(DBResultItem(
                 product_id=pid,
                 score=float(product_scores[pid]),
                 metadata=ProductMetadata(**row_dict)
             ))
 
-        # 4. Postgres returns rows in an arbitrary order with `ANY()`.
-        # We must re-sort them to match Qdrant's vector distances.
         results.sort(key=lambda x: x.score, reverse=True)
         return results

@@ -14,7 +14,7 @@ from src.indexing import config
 # websearch_to_tsquery безопасно парсит свободный пользовательский ввод.
 SEARCH_QUERY = """
     SELECT
-        asin            AS product_id,
+        parent_asin     AS product_id,
         title,
         price,
         ts_rank_cd(search_vector, query) AS score
