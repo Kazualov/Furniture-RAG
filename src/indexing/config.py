@@ -25,7 +25,7 @@ FTS_LANGUAGE = os.getenv("FTS_LANGUAGE", "english")
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_HTTP_PORT = int(os.getenv("QDRANT_HTTP_PORT", 6333))
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "furniture_products")
-EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", 384))
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", 512))
 
 # Путь к векторам (.parquet или .npy).
 VECTORS_PATH = os.getenv("VECTORS_PATH", "./data/vectors.parquet")

@@ -1,19 +1,13 @@
 """
-Этап 1: Загрузка векторов (от Азамата) в Qdrant.
-
-Ожидается, что вектора лежат в parquet-файле с колонками:
-    asin (или parent_asin) — ключ для связи с Postgres
-    vector — list[float] фиксированной размерности (EMBEDDING_DIM)
-
-Если Азамат отдаёт .npy + отдельный список id — см. функцию
-load_vectors_from_npy() ниже и переключи вызов в main().
+Этап 1: Загрузка обновленных мультимодальных векторов (512-dim) в Qdrant.
+Читает матрицу .npy и сопоставляет её с parent_asin из parquet-метаданных.
 
 Запуск:
     python -m src.database.load_qdrant
 """
 
 import os
-
+import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
@@ -25,8 +19,11 @@ load_dotenv()
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_HTTP_PORT = int(os.getenv("QDRANT_HTTP_PORT", 6333))
 COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "furniture_products")
-EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", 384))
-VECTORS_PATH = os.getenv("VECTORS_PATH", "./data/vectors.parquet")
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", 512))
+
+# Пути к новым файлам, созданным мультимодальным generate_embeddings.py
+NPY_PATH = "./embeddings/office_products_micro_embeddings_fp32.npy"
+META_PATH = "./embeddings/office_products_micro_metadata.parquet"
 BATCH_SIZE = 256
 
 
@@ -40,20 +37,37 @@ def ensure_collection(client: QdrantClient) -> None:
         print(f"Коллекция '{COLLECTION_NAME}' уже существует, пересоздаю...")
         client.delete_collection(COLLECTION_NAME)
 
+    # Создаем чистую коллекцию под размерность 512
     client.create_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
     )
 
 
-def load_vectors_from_parquet(path: str) -> pd.DataFrame:
-    df = pd.read_parquet(path)
-    id_col = "asin" if "asin" in df.columns else "parent_asin"
-    if id_col not in df.columns or "vector" not in df.columns:
-        raise ValueError(
-            "Ожидаю колонки 'asin'/'parent_asin' и 'vector' в файле с векторами."
+def load_vectors_from_npy_and_meta(npy_path: str, meta_path: str) -> pd.DataFrame:
+    if not os.path.exists(npy_path) or not os.path.exists(meta_path):
+        raise FileNotFoundError(
+            f"Не найдены новые файлы эмбеддингов!\n"
+            f"Убедитесь, что сначала запустили новый generate_embeddings.py\n"
+            f"Ожидались файлы:\n- {npy_path}\n- {meta_path}"
         )
-    return df.rename(columns={id_col: "point_key"})[["point_key", "vector"]]
+
+    print(f"Читаю эмбеддинги из {npy_path} ...")
+    vectors = np.load(npy_path)
+
+    print(f"Читаю метаданные из {meta_path} ...")
+    meta_df = pd.read_parquet(meta_path)
+
+    id_col = "asin" if "asin" in meta_df.columns else "parent_asin"
+    if id_col not in meta_df.columns:
+        raise ValueError(f"Колонка идентификатора не найдена в {meta_path}")
+
+    # Объединяем ключи товаров и массивы векторов
+    df = pd.DataFrame({
+        "point_key": meta_df[id_col].values,
+        "vector": list(vectors)
+    })
+    return df
 
 
 def upload(client: QdrantClient, df: pd.DataFrame) -> None:
@@ -63,7 +77,7 @@ def upload(client: QdrantClient, df: pd.DataFrame) -> None:
         if len(vector) != EMBEDDING_DIM:
             raise ValueError(
                 f"Размерность вектора {len(vector)} не совпадает с EMBEDDING_DIM={EMBEDDING_DIM} "
-                f"для {row['point_key']}. Проверь .env."
+                f"для {row['point_key']}. Проверьте генерацию."
             )
         points.append(
             PointStruct(
@@ -79,16 +93,16 @@ def upload(client: QdrantClient, df: pd.DataFrame) -> None:
 
 
 def main() -> None:
-    print(f"Читаю вектора из {VECTORS_PATH} ...")
-    df = load_vectors_from_parquet(VECTORS_PATH)
-    print(f"Загружено в память: {len(df)} векторов")
+    # Загружаем сопоставленные 512-мерные данные
+    df = load_vectors_from_npy_and_meta(NPY_PATH, META_PATH)
+    print(f"Загружено в память: {len(df)} мультимодальных векторов")
 
     client = get_client()
     ensure_collection(client)
     upload(client, df)
 
     info = client.get_collection(COLLECTION_NAME)
-    print(f"Готово. Точек в коллекции '{COLLECTION_NAME}': {info.points_count}")
+    print(f"Готово! Точек в коллекции '{COLLECTION_NAME}': {info.points_count}")
 
 
 if __name__ == "__main__":

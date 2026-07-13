@@ -1,37 +1,19 @@
-"""
-Embedding Generation Pipeline
-=======================================
-Loads office_products_micro.parquet (or full), encodes `full_text`
-with all-MiniLM-L6-v2, and saves vectors to disk as .npy + metadata.
-
-Usage:
-    python generate_embeddings.py --input office_products_micro.parquet
-    python generate_embeddings.py --input office_products_full.parquet --batch-size 256
-"""
-
 import argparse
 import time
 from pathlib import Path
 
+import cv2  # Используем OpenCV вместо PIL
 import numpy as np
 import pandas as pd
 import torch
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
+# Используем мультимодальный CLIP
+MODEL_NAME = "sentence-transformers/clip-ViT-B-32"
+DEFAULT_BATCH_SIZE = 64
+EMBED_DIM = 512  # Выходная размерность для clip-ViT-B-32
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-DEFAULT_BATCH_SIZE = 128
-EMBED_DIM = 384  # all-MiniLM-L6-v2 output dimension
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def load_parquet(path: str) -> pd.DataFrame:
     df = pd.read_parquet(path)
@@ -40,44 +22,53 @@ def load_parquet(path: str) -> pd.DataFrame:
     return df
 
 
-def get_texts(df: pd.DataFrame) -> list[str]:
-    """
-    Primary field: full_text (rich concatenated text built in data prep).
-    Fallback: title only, if full_text is missing/empty.
-    """
-    if "full_text" in df.columns:
-        texts = df["full_text"].fillna("").tolist()
-    else:
-        print("Warning: 'full_text' column not found, falling back to 'title'")
-        texts = df["title"].fillna("").tolist()
-
-    # Replace empty strings with a single space so the model never gets an
-    # empty input (SentenceTransformers handles whitespace gracefully).
-    texts = [t if t.strip() else " " for t in texts]
-    return texts
-
-
-def encode_in_batches(
+def encode_multimodal_in_batches(
     model: SentenceTransformer,
-    texts: list[str],
+    df: pd.DataFrame,
+    image_dir: Path,
     batch_size: int,
     device: str,
 ) -> np.ndarray:
     """
-    Encodes texts batch-by-batch and returns a (N, D) float32 array.
-    Uses tqdm for a live progress bar.
+    Побатчево кодирует товары. Если находит локальное изображение товара,
+    кодирует его визуальный эмбеддинг через OpenCV. Если картинки нет — делает
+    фоллбек на текстовое описание, проецируя его в то же пространство.
     """
     all_embeddings = []
 
-    for start in tqdm(range(0, len(texts), batch_size), desc="Encoding batches"):
-        batch = texts[start : start + batch_size]
+    for start in tqdm(range(0, len(df), batch_size), desc="Encoding multimodal batches"):
+        batch_df = df.iloc[start : start + batch_size]
+        batch_inputs = []
+
+        for _, row in batch_df.iterrows():
+            # Предположим, имя файла картинки — это parent_asin.jpg
+            img_path = image_dir / f"{row['parent_asin']}.jpg"
+            img_loaded = False
+
+            if img_path.exists():
+                try:
+                    # Читаем изображение через OpenCV
+                    img = cv2.imread(str(img_path))
+                    if img is not None:
+                        # Конвертируем BGR -> RGB (критично для CLIP!)
+                        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        batch_inputs.append(img_rgb)
+                        img_loaded = True
+                except Exception as e:
+                    print(f"Warning: Failed to load image {img_path}: {e}")
+
+            if not img_loaded:
+                # Фоллбек на текст, если картинки нет или она повреждена
+                fallback_text = row.get("full_text", row.get("title", " "))
+                batch_inputs.append(str(fallback_text if fallback_text.strip() else " "))
+
         with torch.no_grad():
             embs = model.encode(
-                batch,
-                batch_size=batch_size,
+                batch_inputs,
+                batch_size=len(batch_inputs),
                 show_progress_bar=False,
                 convert_to_numpy=True,
-                normalize_embeddings=True,   # L2-norm → cosine sim == dot product
+                normalize_embeddings=True,  # Косинусное сходство в Qdrant
                 device=device,
             )
         all_embeddings.append(embs)
@@ -85,16 +76,17 @@ def encode_in_batches(
     return np.vstack(all_embeddings).astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main():
-    parser = argparse.ArgumentParser(description="Generate embeddings")
+    parser = argparse.ArgumentParser(description="Generate Multimodal Embeddings using OpenCV")
     parser.add_argument(
         "--input",
-        default="office_products_micro.parquet",
+        default="embeddings/office_products_micro.parquet",
         help="Path to input .parquet file",
+    )
+    parser.add_argument(
+        "--image-dir",
+        default="data/images",
+        help="Directory where product images are stored",
     )
     parser.add_argument(
         "--output-dir",
@@ -105,64 +97,40 @@ def main():
         "--batch-size",
         type=int,
         default=DEFAULT_BATCH_SIZE,
-        help="Encoding batch size (increase for GPU, decrease for low RAM)",
-    )
-    parser.add_argument(
-        "--model",
-        default=MODEL_NAME,
-        help="HuggingFace model name or local path",
+        help="Encoding batch size",
     )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    image_dir = Path(args.image_dir)
 
-    # ---- Device ----
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    # ---- Load data ----
     df = load_parquet(args.input)
-    texts = get_texts(df)
-    print(f"Texts to encode: {len(texts):,}")
 
-    # ---- Load model ----
-    print(f"Loading model: {args.model}")
-    model = SentenceTransformer(args.model, device=device)
-    print(f"Embedding dimension: {model.get_sentence_embedding_dimension()}")
+    print(f"Loading multimodal model: {MODEL_NAME}")
+    model = SentenceTransformer(MODEL_NAME, device=device)
 
-    # ---- Encode ----
     t0 = time.perf_counter()
-    embeddings = encode_in_batches(model, texts, args.batch_size, device)
+    embeddings = encode_multimodal_in_batches(model, df, image_dir, args.batch_size, device)
     elapsed = time.perf_counter() - t0
 
-    n = len(texts)
-    print(f"\nEncoding done: {n:,} vectors in {elapsed:.1f}s  ({n/elapsed:.0f} texts/s)")
-    print(f"Embedding matrix shape: {embeddings.shape}  dtype: {embeddings.dtype}")
+    n = len(df)
+    print(f"\nEncoding done: {n:,} items in {elapsed:.1f}s")
 
-    # ---- Save embeddings ----
+    # Сохраняем эмбеддинги
     stem = Path(args.input).stem
     emb_path = output_dir / f"{stem}_embeddings_fp32.npy"
     np.save(emb_path, embeddings)
-    print(f"Saved embeddings → {emb_path}")
 
-    # ---- Save metadata ----
-    # Keep only lightweight columns needed for retrieval / display
+    # Сохраняем метаданные (ваша исходная логика)
     meta_cols = [c for c in ["parent_asin", "title", "price", "average_rating",
-                              "rating_number", "store", "image_url", "categories"]
-                 if c in df.columns]
+                              "rating_number", "store", "image_url", "categories"] if c in df.columns]
     meta_df = df[meta_cols].reset_index(drop=True)
-    meta_path = output_dir / f"{stem}_metadata.parquet"
-    meta_df.to_parquet(meta_path, index=False)
-    print(f"Saved metadata  → {meta_path}")
-
-    # ---- Summary ----
-    size_mb = emb_path.stat().st_size / 1024 / 1024
-    print(f"\n{'='*50}")
-    print(f"  Vectors : {embeddings.shape[0]:,} × {embeddings.shape[1]}")
-    print(f"  File    : {size_mb:.1f} MB  (FP32)")
-    print(f"  Speed   : {n/elapsed:.0f} texts/s on {device}")
-    print(f"{'='*50}")
+    meta_df.to_parquet(output_dir / f"{stem}_metadata.parquet", index=False)
+    print(f"Saved metadata & embeddings to {output_dir}")
 
 
 if __name__ == "__main__":

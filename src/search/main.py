@@ -1,30 +1,32 @@
 import asyncio
 from contextlib import asynccontextmanager
+from typing import List, Dict, Any, Optional
+import io
+
+import numpy as np
+import torch
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from typing import List, Dict, Any
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from PIL import Image
 from sentence_transformers import SentenceTransformer
 
-from src.models.interfaces import SearchQueryRequest, DBResultItem
-# Import the new live client instead of the local simulator
 from src.database.database import LiveDatabaseClient
+from src.models.interfaces import DBResultItem
 
-print("Loading text encoder model (all-MiniLM-L6-v2)...")
-encoder_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Open DB pools
     await LiveDatabaseClient.connect()
     yield
-    # Shutdown: Close DB pools safely
     await LiveDatabaseClient.disconnect()
 
-app = FastAPI(title="Hybrid Search Engine API", version="0.1.0", lifespan=lifespan)
 
-# Initialize the real encoder model globally so it only loads once into memory on startup
-print("Loading text encoder model (all-MiniLM-L6-v2)...")
-encoder_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+app = FastAPI(title="Multimodal Hybrid Search Engine API", version="0.2.0", lifespan=lifespan)
+
+print("Loading Multimodal CLIP Encoder...")
+# Загружаем CLIP глобально
+encoder_model = SentenceTransformer("sentence-transformers/clip-ViT-B-32")
+
 
 def weighted_reciprocal_rank_fusion(
         sparse_results: List[DBResultItem],
@@ -32,21 +34,13 @@ def weighted_reciprocal_rank_fusion(
         alpha: float = 0.5,
         k: int = 60
 ) -> List[Dict[str, Any]]:
-    """
-    Applies Weighted Reciprocal Rank Fusion.
-
-    alpha scales the keyword search impact.
-    (1 - alpha) scales the semantic vector search impact.
-    """
+    # Ваша текущая рабочая функция RRF без изменений
     rrf_scores: Dict[str, float] = {}
     metadata_map: Dict[str, Any] = {}
 
-    # Weight for Sparse results
     sparse_weight = alpha
-    # Weight for Dense results
     dense_weight = 1.0 - alpha
 
-    # Process Sparse (Postgres) ranks
     for rank, item in enumerate(sparse_results, start=1):
         pid = item.product_id
         if pid not in rrf_scores:
@@ -54,7 +48,6 @@ def weighted_reciprocal_rank_fusion(
             metadata_map[pid] = item.metadata.model_dump()
         rrf_scores[pid] += sparse_weight * (1.0 / (k + rank))
 
-    # Process Dense (Qdrant) ranks
     for rank, item in enumerate(dense_results, start=1):
         pid = item.product_id
         if pid not in rrf_scores:
@@ -62,40 +55,79 @@ def weighted_reciprocal_rank_fusion(
             metadata_map[pid] = item.metadata.model_dump()
         rrf_scores[pid] += dense_weight * (1.0 / (k + rank))
 
-    # Re-rank everything based on the weighted scores
     sorted_pids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
-
     return [
-        {
-            "product_id": pid,
-            "rrf_score": round(score, 6),
-            "metadata": metadata_map[pid]
-        }
+        {"product_id": pid, "rrf_score": round(score, 6), "metadata": metadata_map[pid]}
         for pid, score in sorted_pids
     ]
 
 
-@app.post("/search", response_model=List[Dict[str, Any]])
-async def hybrid_search(payload: SearchQueryRequest):
+@app.post("/search")
+async def multimodal_search(
+        query: Optional[str] = Form(None),
+        file: Optional[UploadFile] = File(None),
+        limit: int = Form(10),
+        alpha: float = Form(0.5)
+):
+    if not query and not file:
+        raise HTTPException(status_code=400, detail="Предоставьте текст запроса (query) или изображение (file).")
+
     try:
-        query_text = payload.query
-        query_vector = encoder_model.encode(query_text, normalize_embeddings=True).tolist()
+        text_vector = None
+        image_vector = None
 
-        # Swap out the simulator calls for the Live Database Client
-        sparse_task = LiveDatabaseClient.search_sparse(query_text, limit=payload.limit)
-        dense_task = LiveDatabaseClient.search_dense(query_vector, limit=payload.limit)
+        # 1. Обработка текстового запроса
+        if query:
+            text_vector = encoder_model.encode(query, normalize_embeddings=True)
 
-        sparse_results, dense_results = await asyncio.gather(sparse_task, dense_task)
+        # 2. Обработка входящего изображения
+        if file:
+            image_bytes = await file.read()
+            pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            image_vector = encoder_model.encode(pil_image, normalize_embeddings=True)
 
-        final_results = weighted_reciprocal_rank_fusion(
-            sparse_results=sparse_results,
-            dense_results=dense_results,
-            alpha=payload.alpha
-        )
+        # 3. Нахождение результирующего вектора для Qdrant
+        if text_vector is not None and image_vector is not None:
+            # Текст + Фото: Линейная комбинация векторов (50/50 или можно настроить баланс)
+            combined_vector = (text_vector * 0.5) + (image_vector * 0.5)
+            # Повторно нормализуем вектор
+            query_vector = (combined_vector / np.linalg.norm(combined_vector)).tolist()
+        elif text_vector is not None:
+            query_vector = text_vector.tolist()
+        else:
+            query_vector = image_vector.tolist()
+
+        # 4. Выполнение поиска в БД
+        # Поиск в Qdrant работает всегда, независимо от типа запроса
+        dense_task = LiveDatabaseClient.search_dense(query_vector, limit=limit)
+
+        # В Postgres идем только если есть текст. Если только фото — sparse поиск пропускаем
+        if query:
+            sparse_task = LiveDatabaseClient.search_sparse(query, limit=limit)
+            sparse_results, dense_results = await asyncio.gather(sparse_task, dense_task)
+
+            # Сливаем результаты через RRF
+            final_results = weighted_reciprocal_rank_fusion(
+                sparse_results=sparse_results,
+                dense_results=dense_results,
+                alpha=alpha
+            )
+        else:
+            # Чисто визуальный поиск: берем топ из Qdrant и приводим к общему виду ответа
+            dense_results = await dense_task
+            final_results = [
+                {
+                    "product_id": item.product_id,
+                    "rrf_score": round(item.score, 6),
+                    "metadata": item.metadata.model_dump()
+                }
+                for item in dense_results
+            ]
+
         return final_results
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Engine Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Multimodal Engine Error: {str(e)}")
 
 
 if __name__ == "__main__":

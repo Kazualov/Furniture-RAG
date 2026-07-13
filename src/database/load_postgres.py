@@ -29,7 +29,7 @@ POSTGRES_DSN = (
     f"{os.getenv('POSTGRES_DB', 'furniture_db')}"
 )
 
-PARQUET_PATH = os.getenv("PARQUET_PATH", "./data/products.parquet")
+PARQUET_PATH = os.getenv("PARQUET_PATH", "./embeddings/office_products_micro.parquet")
 BATCH_SIZE = 1000
 
 # Если колонки в исходном файле называются иначе — меняем только здесь.
