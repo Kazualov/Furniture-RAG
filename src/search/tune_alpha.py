@@ -29,11 +29,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Поправьте импорт под структуру вашего проекта — как в test_api.py
-sys.path.append(str(Path(__file__).resolve().parent.parent))
 from fastapi.testclient import TestClient
-from search.main import app
+from src.search.main import app
 
-client = TestClient(app)
 
 
 # --------------------------------------------------------------------------
@@ -89,17 +87,17 @@ def mrr(ranked_product_ids, judgments, relevance_threshold=1.0):
 # Прогон поиска
 # --------------------------------------------------------------------------
 
-def search(query_text, alpha, limit):
+def search(client, query_text, alpha, limit):
     resp = client.post("/search", json={"query": query_text, "limit": limit, "alpha": alpha})
     resp.raise_for_status()
     return [item["product_id"] for item in resp.json()]
 
-
-def evaluate_alpha(queries, alpha, k):
+def evaluate_alpha(client, queries, alpha, k):
     """Возвращает per-query метрики: list of dicts {query_id, query, segment, ndcg, mrr}"""
     rows = []
     for qid, data in queries.items():
-        ranked = search(data["query"], alpha, limit=k)
+        # Передаем client внутрь search
+        ranked = search(client, data["query"], alpha, limit=k)
         rows.append({
             "query_id": qid,
             "query": data["query"],
@@ -144,32 +142,35 @@ def main():
     all_rows = []
     summary = []
 
-    for alpha in alphas:
-        print(f"Прогон alpha={alpha:.2f} ...")
-        rows = evaluate_alpha(queries, alpha, args.k)
-        for r in rows:
-            r["alpha"] = alpha
-        all_rows.extend(rows)
+    # Инициируем TestClient как контекстный менеджер для корректной отработки lifespan (подключения к БД)
+    with TestClient(app) as client:
+        for alpha in alphas:
+            print(f"Прогон alpha={alpha:.2f} ...")
+            # Обязательно передаем объект client в evaluate_alpha
+            rows = evaluate_alpha(client, queries, alpha, args.k)
+            for r in rows:
+                r["alpha"] = alpha
+            all_rows.extend(rows)
 
-        overall_ndcg = [r["ndcg"] for r in rows]
-        overall_mrr = [r["mrr"] for r in rows]
-        keyword_ndcg = [r["ndcg"] for r in rows if r["segment"] == "keyword"]
-        semantic_ndcg = [r["ndcg"] for r in rows if r["segment"] == "semantic"]
+            overall_ndcg = [r["ndcg"] for r in rows]
+            overall_mrr = [r["mrr"] for r in rows]
+            keyword_ndcg = [r["ndcg"] for r in rows if r["segment"] == "keyword"]
+            semantic_ndcg = [r["ndcg"] for r in rows if r["segment"] == "semantic"]
 
-        entry = {
-            "alpha": alpha,
-            "ndcg_mean": np.mean(overall_ndcg),
-            "mrr_mean": np.mean(overall_mrr),
-            "ndcg_keyword": np.mean(keyword_ndcg) if keyword_ndcg else None,
-            "ndcg_semantic": np.mean(semantic_ndcg) if semantic_ndcg else None,
-        }
+            entry = {
+                "alpha": alpha,
+                "ndcg_mean": np.mean(overall_ndcg),
+                "mrr_mean": np.mean(overall_mrr),
+                "ndcg_keyword": np.mean(keyword_ndcg) if keyword_ndcg else None,
+                "ndcg_semantic": np.mean(semantic_ndcg) if semantic_ndcg else None,
+            }
 
-        if args.bootstrap > 0:
-            lo, hi = bootstrap_ci(overall_ndcg, n_iter=args.bootstrap)
-            entry["ndcg_ci_lo"] = lo
-            entry["ndcg_ci_hi"] = hi
+            if args.bootstrap > 0:
+                lo, hi = bootstrap_ci(overall_ndcg, n_iter=args.bootstrap)
+                entry["ndcg_ci_lo"] = lo
+                entry["ndcg_ci_hi"] = hi
 
-        summary.append(entry)
+            summary.append(entry)
 
     # --- Сохранить подробный csv (per query x alpha) ---
     detail_path = Path(args.out_dir) / "alpha_sweep_detail.csv"
@@ -236,7 +237,6 @@ def main():
                   "(классификатор типа запроса перед вызовом /search) вместо одного глобального значения.")
 
     print(f"\nСохранено:\n  {detail_path}\n  {summary_path}\n  {chart_path}")
-
 
 if __name__ == "__main__":
     main()

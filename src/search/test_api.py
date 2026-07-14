@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 # Append current directory to path to prevent absolute import resolution errors
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from search.main import app
+from src.search.main import app
 
 # Initialize the FastAPI TestClient
 client = TestClient(app)
