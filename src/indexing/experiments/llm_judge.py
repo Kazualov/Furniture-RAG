@@ -15,7 +15,7 @@ client = OpenAI(
 MODEL_NAME = "llama3.1"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-INPUT_FILE = os.path.join(SCRIPT_DIR, 'relevance_template_enriched.csv')
+INPUT_FILE = os.path.join(SCRIPT_DIR, '../../search/golden_set.csv')
 
 SYSTEM_PROMPT = """
 Ты — строгий эксперт по оценке релевантности поиска.

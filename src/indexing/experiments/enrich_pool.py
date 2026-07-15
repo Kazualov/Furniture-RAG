@@ -14,7 +14,7 @@ async def enrich_pool():
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
     input_file = os.path.join(SCRIPT_DIR, 'relevance_template.csv')
-    output_file = os.path.join(SCRIPT_DIR, 'relevance_template_enriched.csv')
+    output_file = os.path.join(SCRIPT_DIR, '../../search/golden_set.csv')
 
     # 1. Читаем текущий датасет, чтобы понять, какие пары (запрос-товар) уже есть
     print(f"Чтение текущего пула из {input_file}...")

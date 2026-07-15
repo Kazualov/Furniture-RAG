@@ -2,7 +2,7 @@ import json
 import math
 import time
 import requests
-from metrics import ndcg, recall_at_k, reciprocal_rank
+from src.evaluation.metrics import ndcg, recall_at_k, reciprocal_rank
 
 API_URL = "http://localhost:8000/search"
 # URL для сбора сырых метрик из Qdrant
@@ -84,7 +84,7 @@ def evaluate(golden_dataset, is_exact=True):
 
 if __name__ == "__main__":
     # Загружаем золотой датасет
-    with open("golden_dataset.json", encoding="utf-8") as f:
+    with open("src/evaluation/evaluation_dataset.json", encoding="utf-8") as f:
         golden_dataset = json.load(f)
 
     # 1. Сначала тестируем Baseline (Игнорируя HNSW граф)
