@@ -1,6 +1,7 @@
 import os
 import asyncpg
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.models import SearchParams
 
 # 1. Update imports for the new folder structure
 from src.models.interfaces import DBResultItem, ProductMetadata
@@ -75,7 +76,12 @@ class LiveDatabaseClient:
         return results
 
     @classmethod
-    async def search_dense(cls, query_vector: list[float], limit: int = 10) -> list[DBResultItem]:
+    async def search_dense(
+            cls,
+            query_vector: list[float],
+            limit: int = 10,
+            exact: bool = False  # <-- Новый флаг для байпаса индекса
+    ) -> list[DBResultItem]:
         """Qdrant Vector Search + Postgres Metadata Hydration."""
         if not cls._qdrant or not cls._pg_pool:
             await cls.connect()
@@ -85,7 +91,8 @@ class LiveDatabaseClient:
             collection_name=config.QDRANT_COLLECTION,
             query=query_vector,
             limit=limit,
-            with_payload=True
+            with_payload=True,
+            search_params=SearchParams(exact=exact)  # <-- Передаем флаг в Qdrant
         )
         qdrant_results = qdrant_response.points
 

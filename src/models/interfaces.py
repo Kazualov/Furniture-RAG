@@ -46,3 +46,4 @@ class SearchQueryRequest(BaseModel):
     query: str
     limit: int = 10
     alpha: float = Field(0.5, ge=0.0, le=1.0, description="Balance between Sparse (0.0) and Dense (1.0)")
+    exact_search: bool = False

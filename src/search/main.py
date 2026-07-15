@@ -81,7 +81,11 @@ async def hybrid_search(payload: SearchQueryRequest):
 
         # Swap out the simulator calls for the Live Database Client
         sparse_task = LiveDatabaseClient.search_sparse(query_text, limit=payload.limit)
-        dense_task = LiveDatabaseClient.search_dense(query_vector, limit=payload.limit)
+        dense_task = LiveDatabaseClient.search_dense(
+            query_vector=query_vector,
+            limit=payload.limit,
+            exact=payload.exact_search  # <-- Передаем флаг дальше
+        )
 
         sparse_results, dense_results = await asyncio.gather(sparse_task, dense_task)
 
