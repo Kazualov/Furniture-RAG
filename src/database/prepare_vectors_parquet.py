@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-emb = np.load("embeddings/office_products_full_embeddings_fp32.npy")
+emb = np.load("embeddings/office_products_full_embeddings_int8_dynamic.npy")
 meta = pd.read_parquet("embeddings/office_products_full.parquet")
 
 df = pd.DataFrame({

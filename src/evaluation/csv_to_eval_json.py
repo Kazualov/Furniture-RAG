@@ -4,8 +4,8 @@ import pandas as pd
 
 # Динамическое определение путей относительно расположения скрипта
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-INPUT_FILE = os.path.join(SCRIPT_DIR, 'golden_set.csv')  # или golden_set.csv
-OUTPUT_FILE = os.path.join(SCRIPT_DIR, 'evaluation_dataset.json')
+INPUT_FILE = os.path.join(SCRIPT_DIR, 'relevance_template.csv')  # или golden_set.csv
+OUTPUT_FILE = os.path.join(SCRIPT_DIR, 'evaluation_dataset_2.json')
 
 # Порог релевантности:
 # 1 — учитывать оценки 1 и 2 (мягкий порог)
