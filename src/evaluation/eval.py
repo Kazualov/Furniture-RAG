@@ -54,6 +54,10 @@ def evaluate(golden_dataset, is_exact=True):
     print(f"\nЗапуск оценки для подхода: {approach_name}")
     print(f"Обработка {len(golden_dataset)} запросов...")
 
+    print(f"Прогрев системы для {approach_name}...")
+    # Делаем холостой запрос, результаты и время которого мы просто игнорируем
+    _ = search("warmup query", exact=is_exact, limit=1)
+
     for sample in golden_dataset:
         # Теперь функция search возвращает и результаты, и время выполнения
         prediction, latency = search(sample["query"], exact=is_exact, limit=TOP_K)
